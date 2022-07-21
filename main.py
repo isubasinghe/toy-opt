@@ -3,50 +3,72 @@ from typing import Optional, Any, List
 
 class Value:
     def find(self):
-        raise NotImplementedError("NYI")
-    def _set_forwarded(self, value): 
-        raise NotImplementedError("NYI")
+        raise NotImplementedError("abstract")
+    def _set_forwarded(self, value):
+        raise NotImplementedError("abstract")
+
+
+class Operation(Value):
+    def __init__(self, name: str, args: List[Value]):
+        self.name = name
+        self.args = args
+        self.forwarded = None
+
+    def __repr__(self):
+        return (
+            f"Operation({self.name},"
+            f"{self.args}, {self.forwarded})"
+        )
+
+    def find(self) -> Value:
+        # returns the "representative" value of
+        # self, in the union-find sense
+        op = self
+        while isinstance(op, Operation):
+            # could do path compression here too
+            # but not essential
+            next = op.forwarded
+            if next is None:
+                return op
+            op = next
+        return op
+
+    def arg(self, index):
+        # change to above: return the
+        # representative of argument 'index'
+        return self.args[index].find()
+
+    def make_equal_to(self, value: Value):
+        # this is "union" in the union-find sense,
+        # but the direction is important! The
+        # representative of the union of Operations
+        # must be either a Constant or an operation
+        # that we know for sure is not optimized
+        # away.
+
+        self.find()._set_forwarded(value)
+
+    def _set_forwarded(self, value: Value):
+        self.forwarded = value
+
 
 class Constant(Value):
     def __init__(self, value: Any):
-        self.value = value 
-    
-    def find(self):
-        return self 
+        self.value = value
 
     def __repr__(self):
-        return f"Constant({self.value}"
+        return f"Constant({self.value})"
 
-    def _set_forwarded(self, value):
+    def find(self):
+        return self
+
+    def _set_forwarded(self, value: Value):
         # if we found out that an Operation is
         # equal to a constant, it's a compiler bug
         # to find out that it's equal to another
         # constant
-        assert isinstance(value, Constant) and value.value == self.value
-
-class Operation(Value):
-    def __init__(self, name: str, args: List[Value]):
-        self.name = name 
-        self.args = args 
-        self.forwarded = None 
-
-    def __repr__(self):
-        return f"Operation({self.name}, {self.args})"
-
-    def find(self) -> Value:
-        op = self 
-        while isinstance(op, Operation):
-            nxt = op.forwarded 
-            if nxt is None:
-                return op
-            op = nxt
-        return op
-
-    def arg(self, index: int):
-        return self.args[index]
-
-    def make_equal_to(self, value: Value):
-        self.find()._set_forwarded(value)
+        assert isinstance(value, Constant) and \
+            value.value == self.value
 
 
 class Block(list):
