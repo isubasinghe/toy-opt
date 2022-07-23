@@ -90,29 +90,118 @@ class Block(list):
     dummy = opbuilder("dummy")
     lshift = opbuilder("lshift")
 
-def test_convencience_block_construction():
-    bb = Block()
-    # a again with getarg, the following line
-    # defines the Operation instance and
-    # immediately adds it to the basic block bb
-    a = bb.getarg(0)
-    assert len(bb) == 1
-    assert bb[0].name == "getarg"
 
-    # it's a Constant
-    assert bb[0].args[0].value == 0
+def constfold(bb: Block) -> Block:
+    opt_bb = Block()
 
-    # b with getarg
-    b = bb.getarg(1)
-    # var1 = add(b, 17)
-    var1 = bb.add(b, 17)
-    # var2 = mul(a, var1)
-    var2 = bb.mul(a, var1)
-    # var3 = add(b, 17)
-    var3 = bb.add(b, 17)
-    # var4 = add(var2, var3)
-    var4 = bb.add(var2, var3)
-    assert len(bb) == 6
+    for op in bb:
+        if op.name == "add":
+            arg0 = op.arg(0) # uses .find()
+            arg1 = op.arg(1) # uses .find()
+            if isinstance(arg0, Constant) and isinstance(arg1, Constant):
+                value = arg0.value + arg1.value
+                op.make_equal_to(Constant(value))
+                continue
+        opt_bb.append(op)
+    return opt_bb
+
+
+
+
+def common_subexpr_elimination(bb: Block) -> Block: 
+    opt_bb = Block()
+    for op in bb: 
+        if op.name == "add":
+            arg0 = op.arg(0)
+            arg1 = op.arg(1) 
+            prev_op = find_prev_add_op(arg0, arg1, opt_bb)
+            if prev_op is not None: 
+                op.make_equal_to(prev_op)
+                continue
+        opt_bb.append(op)
+    return opt_bb
+
+def eq_value(val0, val1):
+    if isinstance(val0, Constant) and isinstance(val1, Constant):
+        return val0.value == val1.value
+
+    return val0 is val1
+
+def find_prev_add_op(arg0: Value, arg1: Value,
+        opt_bb: Block) -> Optional[Operation]:
+    # Really naive and quadratic implementation.
+    # What we do is walk over the already emitted
+    # operations and see whether we emitted an add
+    # with the current arguments already. A real
+    # implementation might use a hashmap of some
+    # kind, or at least only look at a limited
+    # window of instructions.
+    for opt_op in opt_bb:
+        if opt_op.name != "add":
+            continue
+        # It's important to call arg here,
+        # for the same reason why we
+        # needed it in constfold: we need to
+        # make sure .find() is called
+        if eq_value(arg0, opt_op.arg(0)) and \
+                eq_value(arg1, opt_op.arg(1)):
+            return opt_op
+    return None
+
+def strength_reduce(bb: Block) -> Block:
+    opt_bb = Block()
+    for op in bb:
+        if op.name == "add":
+            arg0 = op.arg(0)
+            arg1 = op.arg(1)
+            if arg0 is arg1:
+                # x + x turns into x << 1
+                newop = opt_bb.lshift(arg0, 1)
+                op.make_equal_to(newop)
+                continue
+        opt_bb.append(op)
+    return opt_bb
+
+def optimise(bb: Block) -> Block:
+    opt_bb = Block()
+
+    for op in bb:
+        if op.name == "add":
+            arg0 = op.arg(0)
+            arg1 = op.arg(1)
+
+            # constant folding
+            if isinstance(arg0, Constant) and \
+                    isinstance(arg1, Constant):
+                value = arg0.value + arg1.value
+                op.make_equal_to(Constant(value))
+                continue
+
+            # cse
+            prev_op = find_prev_add_op(
+                arg0, arg1, opt_bb)
+            if prev_op is not None:
+                op.make_equal_to(prev_op)
+                continue
+
+            # strength reduce:
+            # x + x turns into x << 1
+            if arg0 is arg1:
+                newop = opt_bb.lshift(arg0, 1)
+                op.make_equal_to(newop)
+                continue
+
+            # and while we are at it, let's do some
+            # arithmetic simplification:
+            # a + 0 => a
+            if eq_value(arg0, Constant(0)):
+                op.make_equal_to(arg1)
+                continue
+            if eq_value(arg1, Constant(0)):
+                op.make_equal_to(arg0)
+                continue
+        opt_bb.append(op)
+    return opt_bb
 
 def bb_to_str(bb: Block, varprefix: str = "var"):
     # the implementation is not too important,
@@ -143,6 +232,30 @@ def bb_to_str(bb: Block, varprefix: str = "var"):
         strop = f"{var} = {op.name}({arguments})"
         res.append(strop)
     return "\n".join(res)
+
+def test_convencience_block_construction():
+    bb = Block()
+    # a again with getarg, the following line
+    # defines the Operation instance and
+    # immediately adds it to the basic block bb
+    a = bb.getarg(0)
+    assert len(bb) == 1
+    assert bb[0].name == "getarg"
+
+    # it's a Constant
+    assert bb[0].args[0].value == 0
+
+    # b with getarg
+    b = bb.getarg(1)
+    # var1 = add(b, 17)
+    var1 = bb.add(b, 17)
+    # var2 = mul(a, var1)
+    var2 = bb.mul(a, var1)
+    # var3 = add(b, 17)
+    var3 = bb.add(b, 17)
+    # var4 = add(var2, var3)
+    var4 = bb.add(var2, var3)
+    assert len(bb) == 6
 
 def test_basicblock_to_str():
     bb = Block()
@@ -224,8 +337,99 @@ def test_union_find():
     # union with the same constant again is fine
     a2.make_equal_to(c)
 
+def test_constfold_two_ops():
+    # now it works!
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.add(5, 4)
+    var2 = bb.add(var1, 10)
+    var3 = bb.add(var2, var0)
+    opt_bb = constfold(bb)
+
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = add(19, optvar0)"""
+
+def test_cse():
+    bb = Block()
+    a = bb.getarg(0)
+    b = bb.getarg(1)
+    var1 = bb.add(b, 17)
+    var2 = bb.mul(a, var1)
+    var3 = bb.add(b, 17)
+    var4 = bb.add(var2, var3)
+
+    opt_bb = common_subexpr_elimination(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = getarg(1)
+optvar2 = add(optvar1, 17)
+optvar3 = mul(optvar0, optvar2)
+optvar4 = add(optvar3, optvar2)"""
+
+
+
+def test_strength_reduce():
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.add(var0, var0)
+
+    opt_bb = strength_reduce(bb)
+
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = lshift(optvar0, 1)"""
+
+def test_single_pass():
+    bb = Block()
+    # constant folding
+    var0 = bb.getarg(0)
+    var1 = bb.add(5, 4)
+    var2 = bb.add(var1, 10)
+    var3 = bb.add(var2, var0)
+
+    opt_bb = optimise(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = add(19, optvar0)"""
+
+    # cse + strength reduction
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.getarg(1)
+    var2 = bb.add(var0, var1)
+    var3 = bb.add(var0, var1) # the same as var3
+    var4 = bb.add(var2, 2)
+    var5 = bb.add(var3, 2) # the same as var4
+    var6 = bb.add(var4, var5)
+
+    opt_bb = optimise(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = getarg(1)
+optvar2 = add(optvar0, optvar1)
+optvar3 = add(optvar2, 2)
+optvar4 = lshift(optvar3, 1)"""
+
+    # removing + 0
+    bb = Block()
+    var0 = bb.getarg(0)
+    var1 = bb.add(16, -16)
+    var2 = bb.add(var0, var1)
+    var3 = bb.add(0, var2)
+    var4 = bb.add(var2, var3)
+
+    opt_bb = optimise(bb)
+    assert bb_to_str(opt_bb, "optvar") == """\
+optvar0 = getarg(0)
+optvar1 = lshift(optvar0, 1)"""
+
 if __name__ == '__main__':
     print("---PyOpt---")
     test_convencience_block_construction()
     test_basicblock_to_str()
     test_union_find()
+    test_constfold_two_ops()
+    test_cse()
+    test_strength_reduce()
+    test_single_pass()
